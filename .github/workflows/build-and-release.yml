@@ -189,18 +189,30 @@ jobs:
           python3 - << 'PYEOF'
           import os, shutil
 
-          # 1. Fix watchOS deployment target (11.6 -> 11.0)
+          # 1. Fix watchOS deployment target (11.6 -> 11.0) & relax Swift 6 strict concurrency errors
           pbxproj_path = "AniHyou.xcodeproj/project.pbxproj"
           if os.path.exists(pbxproj_path):
               with open(pbxproj_path, "r", encoding="utf-8") as f:
                   content = f.read()
-              if "WATCHOS_DEPLOYMENT_TARGET = 11.6;" in content:
-                  content = content.replace("WATCHOS_DEPLOYMENT_TARGET = 11.6;", "WATCHOS_DEPLOYMENT_TARGET = 11.0;")
-                  with open(pbxproj_path, "w", encoding="utf-8") as f:
-                      f.write(content)
-                  print("✅ Patched WATCHOS_DEPLOYMENT_TARGET from 11.6 to 11.0 in project.pbxproj")
+              content = content.replace("WATCHOS_DEPLOYMENT_TARGET = 11.6;", "WATCHOS_DEPLOYMENT_TARGET = 11.0;")
+              content = content.replace("SWIFT_VERSION = 6.0;", "SWIFT_VERSION = 5.0;")
+              content = content.replace("SWIFT_APPROACHABLE_CONCURRENCY = YES;", "SWIFT_STRICT_CONCURRENCY = minimal;")
+              with open(pbxproj_path, "w", encoding="utf-8") as f:
+                  f.write(content)
+              print("✅ Patched project.pbxproj (watchOS SDK & Swift Concurrency settings)")
 
-          # 2. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
+          # 2. Patch PagedResult to conform to @unchecked Sendable
+          paged_result_path = "AniHyou/Network/PagedResult.swift"
+          if os.path.exists(paged_result_path):
+              with open(paged_result_path, "r", encoding="utf-8") as f:
+                  pr = f.read()
+              if "struct PagedResult<Data>" in pr and "@unchecked Sendable" not in pr:
+                  pr = pr.replace("struct PagedResult<Data>", "struct PagedResult<Data>: @unchecked Sendable")
+                  with open(paged_result_path, "w", encoding="utf-8") as f:
+                      f.write(pr)
+                  print("✅ Patched PagedResult to @unchecked Sendable")
+
+          # 3. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
           for root, dirs, files in os.walk("."):
               if root.endswith(".xcassets"):
                   appicon = os.path.join(root, "AppIcon.appiconset")
@@ -291,6 +303,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
+            SWIFT_STRICT_CONCURRENCY=minimal \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
             -skipMacroValidation \
             | xcbeautify
 
