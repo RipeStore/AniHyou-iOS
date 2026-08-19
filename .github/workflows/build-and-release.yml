@@ -183,8 +183,24 @@ jobs:
           } > AniHyou/Config.xcconfig
           echo "✅ Config.xcconfig configured"
 
-      # ─── Pre-resolve SPM to isolate network fetches ───
-      - name: Resolve SPM Dependencies
+      - name: Patch Project Settings
+        run: |
+          set -euo pipefail
+          python3 - << 'PYEOF'
+          import os
+          pbxproj_path = "AniHyou.xcodeproj/project.pbxproj"
+          if os.path.exists(pbxproj_path):
+              with open(pbxproj_path, "r", encoding="utf-8") as f:
+                  content = f.read()
+              if "WATCHOS_DEPLOYMENT_TARGET = 11.6;" in content:
+                  content = content.replace("WATCHOS_DEPLOYMENT_TARGET = 11.6;", "WATCHOS_DEPLOYMENT_TARGET = 11.0;")
+                  with open(pbxproj_path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print("✅ Patched WATCHOS_DEPLOYMENT_TARGET from 11.6 to 11.0 in project.pbxproj")
+          PYEOF
+
+      # ─── Pre-resolve SPM to isolate network fetches & patch dependencies ───
+      - name: Resolve & Patch SPM Dependencies
         timeout-minutes: 15
         run: |
           set -euo pipefail
@@ -192,8 +208,27 @@ jobs:
           xcodebuild -resolvePackageDependencies \
             -scheme "AniHyou" \
             -project ./AniHyou.xcodeproj \
+            -derivedDataPath "$PWD/build" \
             -disableAutomaticPackageResolution
           echo "✅ SPM dependencies resolved"
+
+          # Fix 'nonisolated deinit' in SPM packages (e.g. Nuke) under Swift 6 compiler
+          python3 - << 'PYEOF'
+          import os, glob
+          count = 0
+          for fpath in glob.glob("build/SourcePackages/checkouts/**/*.swift", recursive=True):
+              try:
+                  with open(fpath, "r", encoding="utf-8") as f:
+                      sc = f.read()
+                  if "nonisolated deinit" in sc:
+                      sc = sc.replace("nonisolated deinit", "deinit")
+                      with open(fpath, "w", encoding="utf-8") as f:
+                          f.write(sc)
+                      count += 1
+              except Exception as e:
+                  pass
+          print(f"✅ Patched 'nonisolated deinit' in {count} SPM source files")
+          PYEOF
 
       # ─── Build unsigned .app ───
       - name: Build AniHyou
@@ -213,6 +248,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
+            OTHER_SWIFT_FLAGS='$(inherited) -enable-experimental-feature IsolatedDeinit' \
             -skipMacroValidation \
             | xcbeautify
 
