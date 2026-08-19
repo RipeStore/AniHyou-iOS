@@ -52,9 +52,3 @@ This repository runs an automated GitHub Actions pipeline:
 - **App Store:** [https://apps.apple.com/us/app/anihyou/id1635777325](https://apps.apple.com/us/app/anihyou/id1635777325)
 - **Official TestFlight:** [https://testflight.apple.com/join/Om3OIlKd](https://testflight.apple.com/join/Om3OIlKd)
 - **Upstream Developer (Axel Lopez):** [axiel7](https://github.com/axiel7)
-
----
-
-## ⚖️ Disclaimer
-
-This repository automatically compiles public upstream source code for personal sideloading and archiving purposes. No warranties are provided, and no copyrighted media is hosted directly.
