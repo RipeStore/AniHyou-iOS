@@ -418,14 +418,8 @@ jobs:
               echo ""
               echo "---"
             fi
-            echo "**Branch:** \`$BRANCH\`"
             echo "**Version:** \`$APP_VERSION\`"
-            echo ""
-            echo "Built from upstream commit [\`$SHORT_SHA\`](https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA}) on the \`$BRANCH\` branch."
-            echo ""
-            echo "### Sideloading"
-            echo "- Download \`AniHyou-${TAG}-unsigned.ipa\` below."
-            echo "- Sideload using TrollStore, LiveContainer, AltStore, SideStore, Sideloadly, Feather, or Scarlet."
+            echo "**Upstream Commit:** [\`$SHORT_SHA\`](https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA})"
           } > release_notes.md
 
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
