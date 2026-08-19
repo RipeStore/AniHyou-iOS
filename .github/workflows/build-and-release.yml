@@ -262,13 +262,12 @@ jobs:
           } > AniHyou/Config.xcconfig
           echo "✅ Config.xcconfig configured"
 
-      - name: Prepare Assets & SDK Compatibility
+      - name: Prepare Asset Icons
         run: |
           set -euo pipefail
           python3 - << 'PYEOF'
           import os, shutil
-
-          # 1. Ensure AppIcon alias matches target pbxproj reference
+          # Ensure AppIcon alias matches target pbxproj reference
           for root, dirs, files in os.walk("."):
               if root.endswith(".xcassets"):
                   appicon = os.path.join(root, "AppIcon.appiconset")
@@ -287,28 +286,6 @@ jobs:
                               if not os.path.exists(dst):
                                   shutil.copytree(src, dst)
                                   print(f"✅ Prepared {dst}")
-
-          # 2. SDK Compatibility Shims for experimental iOS 26 #available blocks
-          swiftui_utils = "AniHyou/Utils/SwiftUIUtils.swift"
-          if os.path.exists(swiftui_utils):
-              with open(swiftui_utils, "r", encoding="utf-8") as f:
-                  content = f.read()
-              if "extension View" in content and "func glassEffect(" not in content:
-                  compat_code = (
-                      "\n\n// MARK: SDK Compatibility Shims (Xcode 16 / iOS 18)\n"
-                      "extension View {\n"
-                      "    func glassEffect(in shape: some Shape = Capsule()) -> some View { self }\n"
-                      "    func glassEffect() -> some View { self }\n"
-                      "    func glassEffectUnion(id: String, namespace: Namespace.ID) -> some View { self }\n"
-                      "}\n\n"
-                      "extension ButtonStyle where Self == DefaultButtonStyle {\n"
-                      "    static var glass: DefaultButtonStyle { .init() }\n"
-                      "    static var glassProminent: DefaultButtonStyle { .init() }\n"
-                      "}\n"
-                  )
-                  with open(swiftui_utils, "a", encoding="utf-8") as f:
-                      f.write(compat_code)
-                  print("✅ Appended SDK compatibility shims to SwiftUIUtils.swift")
           PYEOF
 
       # ─── Pre-resolve SPM to isolate network fetches ───
