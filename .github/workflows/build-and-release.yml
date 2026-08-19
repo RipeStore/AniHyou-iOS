@@ -210,7 +210,19 @@ jobs:
                       f.write(pr)
                   print("✅ Patched PagedResult to @unchecked Sendable")
 
-          # 3. Patch all repositories to @MainActor for clean Swift 6 actor isolation
+          # 3. Patch Network.swift to @MainActor and closures to @Sendable
+          network_path = "AniHyou/Network/Network.swift"
+          if os.path.exists(network_path):
+              with open(network_path, "r", encoding="utf-8") as f:
+                  net_code = f.read()
+              net_code = re.sub(r'final\s+class\s+Network:\s*Sendable', '@MainActor final class Network', net_code)
+              net_code = re.sub(r'extractItems:\s*\(Query\.Data\)\s*->\s*\[Item\]\?', 'extractItems: @Sendable (Query.Data) -> [Item]?', net_code)
+              net_code = re.sub(r'extractPage:\s*\(Query\.Data\)\s*->\s*CommonPage\?', 'extractPage: @Sendable (Query.Data) -> CommonPage?', net_code)
+              with open(network_path, "w", encoding="utf-8") as f:
+                  f.write(net_code)
+              print("✅ Patched Network.swift (@MainActor and @Sendable)")
+
+          # 4. Patch all repositories to @MainActor for clean Swift 6 actor isolation
           for r_path in glob.glob("AniHyou/Repositories/*.swift"):
               try:
                   with open(r_path, "r", encoding="utf-8") as f:
@@ -223,7 +235,7 @@ jobs:
               except Exception as e:
                   print(f"⚠️ Error patching {r_path}: {e}")
 
-          # 4. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
+          # 5. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
           for root, dirs, files in os.walk("."):
               if root.endswith(".xcassets"):
                   appicon = os.path.join(root, "AppIcon.appiconset")
