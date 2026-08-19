@@ -1,73 +1,337 @@
-# AniHyou iOS Builder
+name: Build & Release AniHyou iOS IPA
 
-Automated CI/CD builder and release pipeline for [AniHyou iOS](https://github.com/axiel7/AniHyou-iOS) — an open-source, modern AniList client for iOS and watchOS.
+on:
+  schedule:
+    - cron: '0 */12 * * *'
 
-This build is distributed by a third party not related to axiel7/anihyou
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Upstream branch to build from'
+        required: false
+        type: string
+        default: 'main'
+      commit:
+        description: 'Specific commit SHA to build (overrides branch head)'
+        required: false
+        type: string
+        default: ''
+      force_rebuild:
+        description: 'Force build even if this commit was already built'
+        required: false
+        type: boolean
+        default: false
+      is_prerelease:
+        description: 'Mark published release as Pre-release'
+        required: false
+        type: boolean
+        default: false
+      anilist_client_id:
+        description: 'Custom AniList Client ID (leave empty to use secret or default)'
+        required: false
+        type: string
+        default: ''
+      mal_client_id:
+        description: 'Custom MyAnimeList Client ID (leave empty to use secret or default)'
+        required: false
+        type: string
+        default: ''
 
----
+permissions:
+  contents: write
 
-## 📱 About AniHyou
+jobs:
+  check-upstream:
+    name: Resolve Target & Check Existing
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      commit_sha: ${{ steps.resolve.outputs.commit_sha }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
+      branch: ${{ steps.resolve.outputs.branch }}
+      app_version: ${{ steps.resolve.outputs.app_version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      anilist_client_id: ${{ steps.resolve.outputs.anilist_client_id }}
+      mal_client_id: ${{ steps.resolve.outputs.mal_client_id }}
+    steps:
+      - name: Resolve target commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_BRANCH: ${{ inputs.branch || 'main' }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
+          IS_PRERELEASE: ${{ inputs.is_prerelease || 'false' }}
+          INPUT_ANILIST_ID: ${{ inputs.anilist_client_id }}
+          INPUT_MAL_ID: ${{ inputs.mal_client_id }}
+          SECRET_ANILIST_ID: ${{ secrets.ANILIST_CLIENT_ID }}
+          SECRET_MAL_ID: ${{ secrets.MAL_CLIENT_ID }}
+        run: |
+          set -euo pipefail
 
-AniHyou is a native, feature-rich AniList client built with Swift and SwiftUI.
+          UPSTREAM_REPO="axiel7/AniHyou-iOS"
+          CURRENT_REPO="${GITHUB_REPOSITORY}"
+          BRANCH="$INPUT_BRANCH"
 
-### Features
-- ⌚️ **watchOS Support** — Native companion app for Apple Watch
-- 📅 **Air Schedule & Calendar** — Airing soon, seasonal animes, and weekly calendar
-- 🔥 **Trending & Discover** — Explore trending anime/manga, charts (top & popular)
-- 📖 **Comprehensive Details** — Anime/Manga info, tags, characters, staff, recommendations, relations, reviews, stats
-- 📝 **List Management** — Manage Anime/Manga lists (status, progress, score, dates, repeat)
-- 🔍 **Global Search** — Search animes, mangas, characters, staff, studios, and users
-- 👤 **User Profiles** — User activity feeds, bios, and favorites
-- 🧩 **Widgets** — Airing anime widgets for iOS Home Screen & Lock Screen
+          echo "🔍 Resolving build target for $UPSTREAM_REPO..."
 
----
+          if [ -n "$INPUT_COMMIT" ]; then
+            COMMIT_SHA="$INPUT_COMMIT"
+            echo "Manual commit requested: $COMMIT_SHA"
+          else
+            # Get the latest commit on the target branch
+            COMMIT_SHA=$(gh api "repos/$UPSTREAM_REPO/commits/$BRANCH" --jq '.sha' 2>/dev/null)
+            if [ -z "$COMMIT_SHA" ] || [ "$COMMIT_SHA" = "null" ]; then
+              echo "❌ Failed to resolve HEAD of branch '$BRANCH'"
+              exit 1
+            fi
+            echo "Latest commit on $BRANCH: $COMMIT_SHA"
+          fi
 
-## 🚀 Automated Builds & Releases
+          SHORT_SHA="${COMMIT_SHA:0:7}"
 
-This repository runs an automated GitHub Actions pipeline:
-- ⏰ **Scheduled Runs:** Checks upstream `axiel7/AniHyou-iOS` every 12 hours for new commits on `main`.
-- ⚙️ **Manual Dispatch (`workflow_dispatch`):** Build any branch, commit SHA, or force rebuild on demand.
-- 📦 **Unsigned IPAs:** Automatically extracts app marketing version, compiles with Xcode, strips signatures, and packages ready-to-sideload `.ipa` releases.
+          # Extract app version from the project file at this commit
+          APP_VERSION=$(gh api "repos/$UPSTREAM_REPO/contents/AniHyou.xcodeproj/project.pbxproj?ref=$COMMIT_SHA" \
+            --jq '.content' | base64 -d | grep "MARKETING_VERSION" | head -1 | grep -oP '[\d.]+' || echo "1.0.0")
+          echo "App version: $APP_VERSION"
 
-### Workflow Inputs
-- `branch`: Upstream branch to build from (default: `main`).
-- `commit`: Target a specific commit SHA (overrides branch head).
-- `force_rebuild`: Force rebuild even if a release for that commit already exists.
-- `is_prerelease`: Mark published release as pre-release.
-- `anilist_client_id`: Optional custom AniList OAuth Client ID (or set `ANILIST_CLIENT_ID` repo secret).
-- `mal_client_id`: Optional custom MyAnimeList Client ID (or set `MAL_CLIENT_ID` repo secret).
+          # Tag format: v{app_version}-{short_sha}
+          TAG_NAME="v${APP_VERSION}-${SHORT_SHA}"
+          echo "Release tag: $TAG_NAME"
 
----
+          # Determine client IDs
+          ANILIST_ID="${INPUT_ANILIST_ID:-$SECRET_ANILIST_ID}"
+          MAL_ID="${INPUT_MAL_ID:-$SECRET_MAL_ID}"
 
-## 📥 Installation / Sideloading
+          # Check if we already built this exact commit
+          EXISTS_IN_REPO="false"
 
-Download the latest `.ipa` from the [Releases](https://github.com/) section and install via your preferred tool:
+          # Check by tag
+          if gh release view "$TAG_NAME" --repo "$CURRENT_REPO" >/dev/null 2>&1; then
+            EXISTS_IN_REPO="true"
+          fi
 
-- **TrollStore** (iOS 14.0 - 17.0): Direct install with full entitlements and no expiration.
-- **LiveContainer**: Run without burning an App ID limit.
-- **AltStore / SideStore**: Sideload with free or paid Apple Developer account.
-- **Sideloadly**: Sideload via macOS or Windows.
-- **Feather / Scarlet / ESign**: On-device signing with custom certificates.
+          # Also check if any existing release references this commit SHA
+          if [ "$EXISTS_IN_REPO" = "false" ]; then
+            EXISTING=$(gh api "repos/$CURRENT_REPO/releases" --paginate --jq ".[].tag_name" 2>/dev/null | grep "$SHORT_SHA" || true)
+            if [ -n "$EXISTING" ]; then
+              EXISTS_IN_REPO="true"
+              echo "Found existing release with this commit: $EXISTING"
+            fi
+          fi
 
----
+          if [ "$EXISTS_IN_REPO" = "true" ] && [ "$FORCE_REBUILD" != "true" ]; then
+            echo "✅ Commit $SHORT_SHA already built. Skipping."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-## 🖼️ Screenshots
+          echo "🚀 Building commit $SHORT_SHA from branch $BRANCH"
 
-| | | |
-|:---:|:---:|:---:|
-| <img src="screenshots/screenshot_01.webp" width="100%"/> | <img src="screenshots/screenshot_02.webp" width="100%"/> | <img src="screenshots/screenshot_03.webp" width="100%"/> |
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "anilist_client_id=$ANILIST_ID" >> "$GITHUB_OUTPUT"
+          echo "mal_client_id=$MAL_ID" >> "$GITHUB_OUTPUT"
 
----
+  build-ipa:
+    name: Build Unsigned IPA
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      NSUnbufferedIO: "YES"
+      GIT_TERMINAL_PROMPT: "0"
+      ANILIST_CLIENT_ID: ${{ needs.check-upstream.outputs.anilist_client_id }}
+      MAL_CLIENT_ID: ${{ needs.check-upstream.outputs.mal_client_id }}
+    steps:
+      - name: Checkout AniHyou (${{ needs.check-upstream.outputs.short_sha }})
+        uses: actions/checkout@v4
+        with:
+          repository: axiel7/AniHyou-iOS
+          ref: ${{ needs.check-upstream.outputs.commit_sha }}
 
-## 🔗 Links & Upstream Repository
+      - name: Select Xcode & Accept License
+        run: |
+          XCODE_APP=$(find /Applications -maxdepth 1 -name "Xcode_16*.app" | sort -V | tail -n 1)
+          if [ -z "$XCODE_APP" ]; then
+            XCODE_APP=$(find /Applications -maxdepth 1 -name "Xcode*.app" | sort -V | tail -n 1)
+          fi
+          echo "Selected Xcode: $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          echo "DEVELOPER_DIR=$XCODE_APP/Contents/Developer" >> "$GITHUB_ENV"
+          sudo xcodebuild -license accept
+          xcodebuild -version
 
-- **Upstream Repository:** [https://github.com/axiel7/AniHyou-iOS](https://github.com/axiel7/AniHyou-iOS)
-- **App Store:** [https://apps.apple.com/us/app/anihyou/id1635777325](https://apps.apple.com/us/app/anihyou/id1635777325)
-- **Official TestFlight:** [https://testflight.apple.com/join/Om3OIlKd](https://testflight.apple.com/join/Om3OIlKd)
-- **Upstream Developer (Axel Lopez):** [axiel7](https://github.com/axiel7)
+          # Skip macro/plugin trust prompts
+          defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
+          defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
 
----
+      - name: Configure App Secrets (.xcconfig)
+        run: |
+          set -euo pipefail
+          mkdir -p AniHyou
+          {
+            echo "ANILIST_CLIENT_ID = ${ANILIST_CLIENT_ID:-10214}"
+            echo "MAL_CLIENT_ID = ${MAL_CLIENT_ID:-}"
+          } > AniHyou/Config.xcconfig
+          echo "✅ Config.xcconfig configured"
 
-## ⚖️ Disclaimer
+      # ─── Pre-resolve SPM to isolate network fetches ───
+      - name: Resolve SPM Dependencies
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          echo "🔄 Resolving Swift Package Manager dependencies..."
+          xcodebuild -resolvePackageDependencies \
+            -scheme "AniHyou" \
+            -project ./AniHyou.xcodeproj \
+            -disableAutomaticPackageResolution
+          echo "✅ SPM dependencies resolved"
 
-This repository automatically compiles public upstream source code for personal sideloading and archiving purposes. No warranties are provided, and no copyrighted media is hosted directly.
+      # ─── Build unsigned .app ───
+      - name: Build AniHyou
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+
+          xcodebuild build \
+            -project ./AniHyou.xcodeproj \
+            -scheme "AniHyou" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$PWD/build" \
+            -disableAutomaticPackageResolution \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            -skipMacroValidation \
+            | xcbeautify
+
+          echo "✅ Build completed"
+
+      # ─── Package .app into unsigned IPA ───
+      - name: Package Unsigned IPA
+        env:
+          TAG: ${{ needs.check-upstream.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          IPA_NAME="AniHyou-${TAG}-unsigned.ipa"
+
+          echo "📦 Locating .app bundle..."
+
+          APP_PATH=$(find "$PWD/build" \
+            -path "*/Build/Products/Release-iphoneos/*.app" \
+            -not -path "*/PlugIns/*" \
+            -maxdepth 7 2>/dev/null | head -n 1)
+
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "⚠️ Trying broader search..."
+            APP_PATH=$(find "$PWD/build" \
+              -name "AniHyou.app" -type d \
+              -not -path "*/PlugIns/*" \
+              -not -path "*Intermediates*" 2>/dev/null | head -n 1)
+          fi
+
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "❌ Failed to find .app. Build contents:"
+            find "$PWD/build" -name "*.app" -type d 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Found: $APP_PATH"
+
+          # Strip code signatures for clean unsigned IPA
+          codesign --remove-signature "${APP_PATH}" 2>/dev/null || true
+          find "${APP_PATH}" \( -name "*.dylib" -o -name "*.framework" -o -name "*.appex" -o -name "*.app" \) -print0 | \
+            while IFS= read -r -d '' f; do
+              codesign --remove-signature "$f" 2>/dev/null || true
+            done
+
+          # Package into IPA
+          PAYLOAD_DIR="payload/Payload"
+          mkdir -p "${PAYLOAD_DIR}"
+          cp -R "${APP_PATH}" "${PAYLOAD_DIR}/"
+
+          cd payload
+          zip -q -r -y "../${IPA_NAME}" Payload
+          cd ..
+
+          ls -lh "${IPA_NAME}"
+          echo "🎉 Done: ${IPA_NAME}"
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: AniHyou-*.ipa
+          retention-days: 1
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [check-upstream, build-ipa]
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download IPA artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ios-ipa
+          merge-multiple: true
+
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check-upstream.outputs.tag }}
+          SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
+          COMMIT_SHA: ${{ needs.check-upstream.outputs.commit_sha }}
+          BRANCH: ${{ needs.check-upstream.outputs.branch }}
+          APP_VERSION: ${{ needs.check-upstream.outputs.app_version }}
+          IS_PRERELEASE: ${{ needs.check-upstream.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_REPO="axiel7/AniHyou-iOS"
+          echo "🚀 Publishing Release '$TAG'..."
+
+          COMMIT_MSG=$(gh api "repos/$UPSTREAM_REPO/commits/$COMMIT_SHA" --jq '.commit.message // empty' 2>/dev/null || true)
+          RELEASE_TITLE="AniHyou v${APP_VERSION} (${SHORT_SHA})"
+
+          {
+            if [ -n "$COMMIT_MSG" ]; then
+              echo "$COMMIT_MSG"
+              echo ""
+              echo "---"
+            fi
+            echo "**Branch:** \`$BRANCH\`"
+            echo "**Version:** \`$APP_VERSION\`"
+            echo ""
+            echo "Built from upstream commit [\`$SHORT_SHA\`](https://github.com/${UPSTREAM_REPO}/commit/${COMMIT_SHA}) on the \`$BRANCH\` branch."
+            echo ""
+            echo "### Sideloading"
+            echo "- Download \`AniHyou-${TAG}-unsigned.ipa\` below."
+            echo "- Sideload using TrollStore, LiveContainer, AltStore, SideStore, Sideloadly, Feather, or Scarlet."
+          } > release_notes.md
+
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+
+          EXTRA_FLAGS=()
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            EXTRA_FLAGS+=("--prerelease")
+          fi
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_TITLE" \
+            --notes-file release_notes.md \
+            "${EXTRA_FLAGS[@]}" \
+            *.ipa
