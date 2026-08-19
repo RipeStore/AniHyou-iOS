@@ -25,29 +25,16 @@ AniHyou is a native, feature-rich AniList client built with Swift and SwiftUI.
 ## 🚀 Automated Builds & Releases
 
 This repository runs an automated GitHub Actions pipeline:
-- ⏰ **Scheduled Runs:** Checks upstream `axiel7/AniHyou-iOS` every 12 hours for new commits on `main`.
-- ⚙️ **Manual Dispatch (`workflow_dispatch`):** Build any branch, commit SHA, or force rebuild on demand.
-- 📦 **Unsigned IPAs:** Automatically extracts app marketing version, compiles with Xcode, strips signatures, and packages ready-to-sideload `.ipa` releases.
+- ⏰ **Scheduled Runs:** Automatically queries the official Apple App Store API for published AniHyou releases (e.g. `1.8.7`), resolves the corresponding upstream commit (`build: <version>`), and builds when a new release drops.
+- ⚙️ **Manual Dispatch (`workflow_dispatch`):** Build any branch (`main`), commit SHA, tag, or force rebuild on demand.
+- 📦 **Unsigned IPAs:** Compiles with Xcode, strips signature constraints, and packages ready-to-sideload `.ipa` releases.
 
 ### Workflow Inputs
-- `branch`: Upstream branch to build from (default: `main`).
-- `commit`: Target a specific commit SHA (overrides branch head).
-- `force_rebuild`: Force rebuild even if a release for that commit already exists.
+- `target`: Upstream Tag, Branch, or Commit SHA (leave empty to auto-detect latest App Store release).
+- `force_rebuild`: Force rebuild even if a release for that target already exists.
 - `is_prerelease`: Mark published release as pre-release.
 - `anilist_client_id`: Optional custom AniList OAuth Client ID (or set `ANILIST_CLIENT_ID` repo secret).
 - `mal_client_id`: Optional custom MyAnimeList Client ID (or set `MAL_CLIENT_ID` repo secret).
-
----
-
-## 📥 Installation / Sideloading
-
-Download the latest `.ipa` from the [Releases](https://github.com/) section and install via your preferred tool:
-
-- **TrollStore** (iOS 14.0 - 17.0): Direct install with full entitlements and no expiration.
-- **LiveContainer**: Run without burning an App ID limit.
-- **AltStore / SideStore**: Sideload with free or paid Apple Developer account.
-- **Sideloadly**: Sideload via macOS or Windows.
-- **Feather / Scarlet / ESign**: On-device signing with custom certificates.
 
 ---
 
