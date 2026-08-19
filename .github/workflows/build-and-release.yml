@@ -209,25 +209,38 @@ jobs:
             -scheme "AniHyou" \
             -project ./AniHyou.xcodeproj \
             -derivedDataPath "$PWD/build" \
+            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
             -disableAutomaticPackageResolution
           echo "✅ SPM dependencies resolved"
 
           # Fix 'nonisolated deinit' in SPM packages (e.g. Nuke) under Swift 6 compiler
           python3 - << 'PYEOF'
-          import os, glob
-          count = 0
-          for fpath in glob.glob("build/SourcePackages/checkouts/**/*.swift", recursive=True):
-              try:
-                  with open(fpath, "r", encoding="utf-8") as f:
-                      sc = f.read()
-                  if "nonisolated deinit" in sc:
-                      sc = sc.replace("nonisolated deinit", "deinit")
-                      with open(fpath, "w", encoding="utf-8") as f:
-                          f.write(sc)
-                      count += 1
-              except Exception as e:
-                  pass
-          print(f"✅ Patched 'nonisolated deinit' in {count} SPM source files")
+          import os, glob, re
+          search_roots = [
+              os.path.abspath("build"),
+              os.path.expanduser("~/Library/Developer/Xcode/DerivedData"),
+              os.path.expanduser("~/Library/Caches/org.swift.swiftpm"),
+              os.path.abspath(".")
+          ]
+          patched = 0
+          for base in search_roots:
+              if os.path.exists(base):
+                  for root, dirs, files in os.walk(base):
+                      for file in files:
+                          if file.endswith(".swift"):
+                              fpath = os.path.join(root, file)
+                              try:
+                                  with open(fpath, "r", encoding="utf-8") as f:
+                                      content = f.read()
+                                  if "nonisolated deinit" in content:
+                                      new_content = re.sub(r'\bnonisolated\s+deinit\b', 'deinit', content)
+                                      with open(fpath, "w", encoding="utf-8") as f:
+                                          f.write(new_content)
+                                      patched += 1
+                                      print(f"Patched nonisolated deinit in: {fpath}")
+                              except Exception as e:
+                                  pass
+          print(f"✅ Patched 'nonisolated deinit' across {patched} files")
           PYEOF
 
       # ─── Build unsigned .app ───
@@ -242,13 +255,13 @@ jobs:
             -configuration Release \
             -destination "generic/platform=iOS" \
             -derivedDataPath "$PWD/build" \
+            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
             -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
-            OTHER_SWIFT_FLAGS='$(inherited) -enable-experimental-feature IsolatedDeinit' \
             -skipMacroValidation \
             | xcbeautify
 
