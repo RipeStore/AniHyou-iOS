@@ -6,18 +6,13 @@ on:
 
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Upstream branch to build from'
-        required: false
-        type: string
-        default: 'main'
-      commit:
-        description: 'Specific commit SHA to build (overrides branch head)'
+      target:
+        description: 'Upstream Tag, Branch, or Commit SHA (leave empty to auto-detect latest App Store release)'
         required: false
         type: string
         default: ''
       force_rebuild:
-        description: 'Force build even if this commit was already built'
+        description: 'Force build even if this release was already published'
         required: false
         type: boolean
         default: false
@@ -49,7 +44,6 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       commit_sha: ${{ steps.resolve.outputs.commit_sha }}
       short_sha: ${{ steps.resolve.outputs.short_sha }}
-      branch: ${{ steps.resolve.outputs.branch }}
       app_version: ${{ steps.resolve.outputs.app_version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       anilist_client_id: ${{ steps.resolve.outputs.anilist_client_id }}
@@ -59,8 +53,7 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_BRANCH: ${{ inputs.branch || 'main' }}
-          INPUT_COMMIT: ${{ inputs.commit }}
+          INPUT_TARGET: ${{ inputs.target }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
           IS_PRERELEASE: ${{ inputs.is_prerelease || 'false' }}
           INPUT_ANILIST_ID: ${{ inputs.anilist_client_id }}
@@ -70,74 +63,160 @@ jobs:
         run: |
           set -euo pipefail
 
-          UPSTREAM_REPO="axiel7/AniHyou-iOS"
-          CURRENT_REPO="${GITHUB_REPOSITORY}"
-          BRANCH="$INPUT_BRANCH"
+          python3 - << 'PYEOF'
+          import os, sys, json, re, urllib.request, subprocess
 
-          echo "🔍 Resolving build target for $UPSTREAM_REPO..."
+          upstream_repo = "axiel7/AniHyou-iOS"
+          current_repo = os.environ.get("GITHUB_REPOSITORY", "")
+          input_target = os.environ.get("INPUT_TARGET", "").strip()
+          force_rebuild = os.environ.get("FORCE_REBUILD", "false").lower() == "true"
+          is_prerelease = os.environ.get("IS_PRERELEASE", "false").lower() == "true"
+          gh_token = os.environ.get("GH_TOKEN", "")
 
-          if [ -n "$INPUT_COMMIT" ]; then
-            COMMIT_SHA="$INPUT_COMMIT"
-            echo "Manual commit requested: $COMMIT_SHA"
-          else
-            # Get the latest commit on the target branch
-            COMMIT_SHA=$(gh api "repos/$UPSTREAM_REPO/commits/$BRANCH" --jq '.sha' 2>/dev/null)
-            if [ -z "$COMMIT_SHA" ] || [ "$COMMIT_SHA" = "null" ]; then
-              echo "❌ Failed to resolve HEAD of branch '$BRANCH'"
-              exit 1
-            fi
-            echo "Latest commit on $BRANCH: $COMMIT_SHA"
-          fi
+          headers = {"User-Agent": "Mozilla/5.0"}
+          if gh_token:
+              headers["Authorization"] = f"token {gh_token}"
+              headers["Accept"] = "application/vnd.github+json"
 
-          SHORT_SHA="${COMMIT_SHA:0:7}"
+          commit_sha = ""
+          app_version = ""
+          target_source = ""
 
-          # Extract app version from the project file at this commit
-          APP_VERSION=$(gh api "repos/$UPSTREAM_REPO/contents/AniHyou.xcodeproj/project.pbxproj?ref=$COMMIT_SHA" \
-            --jq '.content' | base64 -d | grep "MARKETING_VERSION" | head -1 | grep -oP '[\d.]+' || echo "1.0.0")
-          echo "App version: $APP_VERSION"
+          if input_target:
+              print(f"🎯 Manual target requested: {input_target}")
+              # Check if it's a commit SHA, branch, or tag via gh api
+              try:
+                  url = f"https://api.github.com/repos/{upstream_repo}/commits/{input_target}"
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      data = json.loads(resp.read().decode("utf-8"))
+                      commit_sha = data.get("sha", "")
+                      target_source = f"manual-{input_target}"
+              except Exception as e:
+                  print(f"⚠️ Could not resolve target via direct commit: {e}")
+                  commit_sha = input_target
+                  target_source = "manual"
+          else:
+              print("🔍 Auto-detecting latest App Store release for AniHyou...")
+              app_id = "1635777325"
+              store_version = None
+              try:
+                  url = f"https://itunes.apple.com/lookup?id={app_id}"
+                  req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      data = json.loads(resp.read().decode("utf-8"))
+                      if data.get("resultCount", 0) > 0:
+                          store_version = data["results"][0].get("version")
+                          print(f"📱 Apple App Store version: {store_version}")
+              except Exception as e:
+                  print(f"⚠️ iTunes API lookup failed: {e}")
 
-          # Tag format: v{app_version}-{short_sha}
-          TAG_NAME="v${APP_VERSION}-${SHORT_SHA}"
-          echo "Release tag: $TAG_NAME"
+              # 1. Search GitHub commit matching "build: <store_version>"
+              if store_version:
+                  try:
+                      url = f"https://api.github.com/search/commits?q=repo:{upstream_repo}+%22build:+{store_version}%22"
+                      req = urllib.request.Request(url, headers=headers)
+                      with urllib.request.urlopen(req, timeout=10) as resp:
+                          data = json.loads(resp.read().decode("utf-8"))
+                          for item in data.get("items", []):
+                              msg = item.get("commit", {}).get("message", "")
+                              if re.search(rf'^(build|bump):\s*{re.escape(store_version)}\b', msg, re.I):
+                                  commit_sha = item.get("sha", "")
+                                  app_version = store_version
+                                  target_source = f"appstore-{store_version}"
+                                  print(f"✅ Found App Store release commit: {commit_sha} ({msg.splitlines()[0]})")
+                                  break
+                  except Exception as e:
+                      print(f"⚠️ GitHub commit search failed: {e}")
 
-          # Determine client IDs
-          ANILIST_ID="${INPUT_ANILIST_ID:-$SECRET_ANILIST_ID}"
-          MAL_ID="${INPUT_MAL_ID:-$SECRET_MAL_ID}"
+              # 2. Fallback: Search latest commits for any 'build: X.Y.Z'
+              if not commit_sha:
+                  try:
+                      url = f"https://api.github.com/repos/{upstream_repo}/commits?per_page=100"
+                      req = urllib.request.Request(url, headers=headers)
+                      with urllib.request.urlopen(req, timeout=10) as resp:
+                          commits = json.loads(resp.read().decode("utf-8"))
+                          for c in commits:
+                              msg = c.get("commit", {}).get("message", "")
+                              match = re.search(r'^(build|bump):\s*(\d+\.\d+(?:\.\d+)?)', msg, re.I)
+                              if match:
+                                  commit_sha = c.get("sha", "")
+                                  app_version = match.group(2)
+                                  target_source = f"build-commit-{app_version}"
+                                  print(f"✅ Found latest build commit: {commit_sha} ({msg.splitlines()[0]})")
+                                  break
+                  except Exception as e:
+                      print(f"⚠️ Commit history fallback failed: {e}")
 
-          # Check if we already built this exact commit
-          EXISTS_IN_REPO="false"
+              # 3. Fallback: HEAD of main
+              if not commit_sha:
+                  try:
+                      url = f"https://api.github.com/repos/{upstream_repo}/commits/main"
+                      req = urllib.request.Request(url, headers=headers)
+                      with urllib.request.urlopen(req, timeout=10) as resp:
+                          data = json.loads(resp.read().decode("utf-8"))
+                          commit_sha = data.get("sha", "")
+                          target_source = "main-head"
+                          print(f"ℹ️ Fallback to main branch HEAD: {commit_sha}")
+                  except Exception as e:
+                      print(f"❌ Failed to resolve main HEAD: {e}")
+                      sys.exit(1)
 
-          # Check by tag
-          if gh release view "$TAG_NAME" --repo "$CURRENT_REPO" >/dev/null 2>&1; then
-            EXISTS_IN_REPO="true"
-          fi
+          short_sha = commit_sha[:7]
 
-          # Also check if any existing release references this commit SHA
-          if [ "$EXISTS_IN_REPO" = "false" ]; then
-            EXISTING=$(gh api "repos/$CURRENT_REPO/releases" --paginate --jq ".[].tag_name" 2>/dev/null | grep "$SHORT_SHA" || true)
-            if [ -n "$EXISTING" ]; then
-              EXISTS_IN_REPO="true"
-              echo "Found existing release with this commit: $EXISTING"
-            fi
-          fi
+          # Extract app version from project.pbxproj at commit if not set
+          if not app_version:
+              try:
+                  url = f"https://api.github.com/repos/{upstream_repo}/contents/AniHyou.xcodeproj/project.pbxproj?ref={commit_sha}"
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      import base64
+                      raw_pbx = base64.b64decode(json.loads(resp.read().decode("utf-8")).get("content", "")).decode("utf-8", errors="ignore")
+                      mv_match = re.search(r'MARKETING_VERSION\s*=\s*([0-9.]+);', raw_pbx)
+                      if mv_match:
+                          app_version = mv_match.group(1)
+              except Exception:
+                  pass
 
-          if [ "$EXISTS_IN_REPO" = "true" ] && [ "$FORCE_REBUILD" != "true" ]; then
-            echo "✅ Commit $SHORT_SHA already built. Skipping."
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          if not app_version:
+              app_version = "1.0.0"
 
-          echo "🚀 Building commit $SHORT_SHA from branch $BRANCH"
+          tag_name = f"v{app_version}-{short_sha}"
+          print(f"🏷️ Release Tag: {tag_name} (Version: {app_version}, SHA: {short_sha})")
 
-          echo "should_build=true" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "anilist_client_id=$ANILIST_ID" >> "$GITHUB_OUTPUT"
-          echo "mal_client_id=$MAL_ID" >> "$GITHUB_OUTPUT"
+          # Check if already released
+          exists_in_repo = False
+          if current_repo:
+              try:
+                  url = f"https://api.github.com/repos/{current_repo}/releases/tags/{tag_name}"
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      if resp.status == 200:
+                          exists_in_repo = True
+                          print(f"ℹ️ Found existing release for tag {tag_name}")
+              except Exception:
+                  pass
+
+          if exists_in_repo and not force_rebuild:
+              print(f"✅ Target {tag_name} already released. Skipping build.")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("should_build=false\n")
+              sys.exit(0)
+
+          anilist_id = os.environ.get("INPUT_ANILIST_ID") or os.environ.get("SECRET_ANILIST_ID") or ""
+          mal_id = os.environ.get("INPUT_MAL_ID") or os.environ.get("SECRET_MAL_ID") or ""
+
+          print(f"🚀 Ready to build target: {tag_name} ({target_source})")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("should_build=true\n")
+              f.write(f"tag={tag_name}\n")
+              f.write(f"commit_sha={commit_sha}\n")
+              f.write(f"short_sha={short_sha}\n")
+              f.write(f"app_version={app_version}\n")
+              f.write(f"prerelease={str(is_prerelease).lower()}\n")
+              f.write(f"anilist_client_id={anilist_id}\n")
+              f.write(f"mal_client_id={mal_id}\n")
+          PYEOF
 
   build-ipa:
     name: Build Unsigned IPA
@@ -183,66 +262,19 @@ jobs:
           } > AniHyou/Config.xcconfig
           echo "✅ Config.xcconfig configured"
 
-      - name: Patch Project Settings & Asset Catalogs
+      - name: Prepare Asset Icons
         run: |
           set -euo pipefail
           python3 - << 'PYEOF'
-          import os, glob, re, shutil
-
-          # 1. Fix watchOS deployment target (11.6 -> 11.0)
-          pbxproj_path = "AniHyou.xcodeproj/project.pbxproj"
-          if os.path.exists(pbxproj_path):
-              with open(pbxproj_path, "r", encoding="utf-8") as f:
-                  content = f.read()
-              content = content.replace("WATCHOS_DEPLOYMENT_TARGET = 11.6;", "WATCHOS_DEPLOYMENT_TARGET = 11.0;")
-              with open(pbxproj_path, "w", encoding="utf-8") as f:
-                  f.write(content)
-              print("✅ Patched project.pbxproj watchOS deployment target to 11.0")
-
-          # 2. Patch PagedResult to conform to @unchecked Sendable for Swift 6 concurrency
-          paged_result_path = "AniHyou/Network/PagedResult.swift"
-          if os.path.exists(paged_result_path):
-              with open(paged_result_path, "r", encoding="utf-8") as f:
-                  pr = f.read()
-              if "struct PagedResult<Data>" in pr and "@unchecked Sendable" not in pr:
-                  pr = re.sub(r'struct\s+PagedResult<Data>(?!\s*:\s*@unchecked\s+Sendable)', 'struct PagedResult<Data>: @unchecked Sendable', pr)
-                  with open(paged_result_path, "w", encoding="utf-8") as f:
-                      f.write(pr)
-                  print("✅ Patched PagedResult to @unchecked Sendable")
-
-          # 3. Patch Network.swift to @MainActor and closures to @Sendable
-          network_path = "AniHyou/Network/Network.swift"
-          if os.path.exists(network_path):
-              with open(network_path, "r", encoding="utf-8") as f:
-                  net_code = f.read()
-              net_code = re.sub(r'final\s+class\s+Network:\s*Sendable', '@MainActor final class Network', net_code)
-              net_code = re.sub(r'extractItems:\s*\(Query\.Data\)\s*->\s*\[Item\]\?', 'extractItems: @Sendable (Query.Data) -> [Item]?', net_code)
-              net_code = re.sub(r'extractPage:\s*\(Query\.Data\)\s*->\s*CommonPage\?', 'extractPage: @Sendable (Query.Data) -> CommonPage?', net_code)
-              with open(network_path, "w", encoding="utf-8") as f:
-                  f.write(net_code)
-              print("✅ Patched Network.swift (@MainActor and @Sendable)")
-
-          # 4. Patch all repositories to @MainActor for clean Swift 6 actor isolation
-          for r_path in glob.glob("AniHyou/Repositories/*.swift"):
-              try:
-                  with open(r_path, "r", encoding="utf-8") as f:
-                      r_code = f.read()
-                  new_r_code = re.sub(r'(?<!@MainActor\s)struct\s+(\w+Repository)', r'@MainActor struct \1', r_code)
-                  if new_r_code != r_code:
-                      with open(r_path, "w", encoding="utf-8") as f:
-                          f.write(new_r_code)
-                      print(f"✅ Patched @MainActor on {r_path}")
-              except Exception as e:
-                  print(f"⚠️ Error patching {r_path}: {e}")
-
-          # 5. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
+          import os, shutil
+          # Ensure AppIcon alias matches target pbxproj reference
           for root, dirs, files in os.walk("."):
               if root.endswith(".xcassets"):
                   appicon = os.path.join(root, "AppIcon.appiconset")
                   anihyou = os.path.join(root, "AniHyou.appiconset")
                   if os.path.exists(appicon) and not os.path.exists(anihyou):
                       shutil.copytree(appicon, anihyou)
-                      print(f"✅ Created {anihyou} from {appicon}")
+                      print(f"✅ Prepared {anihyou}")
 
                   appicons_sub = os.path.join(root, "AppIcons")
                   if os.path.exists(appicons_sub):
@@ -253,11 +285,11 @@ jobs:
                               dst = os.path.join(appicons_sub, f"AniHyou-{color}.appiconset")
                               if not os.path.exists(dst):
                                   shutil.copytree(src, dst)
-                                  print(f"✅ Created {dst} from {src}")
+                                  print(f"✅ Prepared {dst}")
           PYEOF
 
-      # ─── Pre-resolve SPM to isolate network fetches & patch dependencies ───
-      - name: Resolve & Patch SPM Dependencies
+      # ─── Pre-resolve SPM to isolate network fetches ───
+      - name: Resolve SPM Dependencies
         timeout-minutes: 15
         run: |
           set -euo pipefail
@@ -266,46 +298,8 @@ jobs:
             -scheme "AniHyou" \
             -project ./AniHyou.xcodeproj \
             -derivedDataPath "$PWD/build" \
-            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
             -disableAutomaticPackageResolution
           echo "✅ SPM dependencies resolved"
-
-          # Ensure all checked out files are writable
-          chmod -R u+w "$PWD/build" 2>/dev/null || true
-
-          # Fix 'nonisolated deinit' in SPM packages (e.g. Nuke) under Swift 6 compiler
-          python3 - << 'PYEOF'
-          import os, glob, re, stat
-          search_roots = [
-              os.path.abspath("build"),
-              os.path.expanduser("~/Library/Developer/Xcode/DerivedData"),
-              os.path.expanduser("~/Library/Caches/org.swift.swiftpm"),
-              os.path.abspath(".")
-          ]
-          patched = 0
-          for base in search_roots:
-              if os.path.exists(base):
-                  for root, dirs, files in os.walk(base):
-                      for file in files:
-                          if file.endswith(".swift"):
-                              fpath = os.path.join(root, file)
-                              try:
-                                  with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                                      content = f.read()
-                                  if "nonisolated deinit" in content:
-                                      new_content = re.sub(r'\bnonisolated\s+deinit\b', 'deinit', content)
-                                      try:
-                                          os.chmod(fpath, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-                                      except Exception:
-                                          pass
-                                      with open(fpath, "w", encoding="utf-8") as f:
-                                          f.write(new_content)
-                                      patched += 1
-                                      print(f"✅ Patched nonisolated deinit in: {fpath}")
-                              except Exception as e:
-                                  print(f"⚠️ Warning patching {fpath}: {e}")
-          print(f"✅ Patched 'nonisolated deinit' across {patched} files")
-          PYEOF
 
       # ─── Build unsigned .app ───
       - name: Build AniHyou
@@ -319,15 +313,12 @@ jobs:
             -configuration Release \
             -destination "generic/platform=iOS" \
             -derivedDataPath "$PWD/build" \
-            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
             -disableAutomaticPackageResolution \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
-            SWIFT_STRICT_CONCURRENCY=minimal \
-            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
             -skipMacroValidation \
             | xcbeautify
 
