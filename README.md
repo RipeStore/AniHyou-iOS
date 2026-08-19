@@ -1,12 +1,9 @@
-# AniHyou iOS Builder
 
-Automated CI/CD builder and release pipeline for [AniHyou iOS](https://github.com/axiel7/AniHyou-iOS) — an open-source, modern AniList client for iOS and watchOS.
+AniHyou is an open-source, modern AniList client for iOS
 
 This build is distributed by a third party not related to axiel7/anihyou
 
 ---
-
-## 📱 About AniHyou
 
 AniHyou is a native, feature-rich AniList client built with Swift and SwiftUI.
 
