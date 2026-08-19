@@ -45,6 +45,7 @@ jobs:
       commit_sha: ${{ steps.resolve.outputs.commit_sha }}
       short_sha: ${{ steps.resolve.outputs.short_sha }}
       app_version: ${{ steps.resolve.outputs.app_version }}
+      release_notes: ${{ steps.resolve.outputs.release_notes }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       anilist_client_id: ${{ steps.resolve.outputs.anilist_client_id }}
       mal_client_id: ${{ steps.resolve.outputs.mal_client_id }}
@@ -81,6 +82,7 @@ jobs:
           commit_sha = ""
           app_version = ""
           target_source = ""
+          store_release_notes = ""
 
           if input_target:
               print(f"🎯 Manual target requested: {input_target}")
@@ -107,6 +109,7 @@ jobs:
                       data = json.loads(resp.read().decode("utf-8"))
                       if data.get("resultCount", 0) > 0:
                           store_version = data["results"][0].get("version")
+                          store_release_notes = data["results"][0].get("releaseNotes", "")
                           print(f"📱 Apple App Store version: {store_version}")
               except Exception as e:
                   print(f"⚠️ iTunes API lookup failed: {e}")
@@ -216,6 +219,10 @@ jobs:
               f.write(f"prerelease={str(is_prerelease).lower()}\n")
               f.write(f"anilist_client_id={anilist_id}\n")
               f.write(f"mal_client_id={mal_id}\n")
+              if store_release_notes:
+                  f.write(f"release_notes<<EOF\n{store_release_notes}\nEOF\n")
+              else:
+                  f.write("release_notes=\n")
           PYEOF
 
   build-ipa:
@@ -400,8 +407,8 @@ jobs:
           TAG: ${{ needs.check-upstream.outputs.tag }}
           SHORT_SHA: ${{ needs.check-upstream.outputs.short_sha }}
           COMMIT_SHA: ${{ needs.check-upstream.outputs.commit_sha }}
-          BRANCH: ${{ needs.check-upstream.outputs.branch }}
           APP_VERSION: ${{ needs.check-upstream.outputs.app_version }}
+          STORE_RELEASE_NOTES: ${{ needs.check-upstream.outputs.release_notes }}
           IS_PRERELEASE: ${{ needs.check-upstream.outputs.prerelease }}
         run: |
           set -euo pipefail
@@ -413,6 +420,11 @@ jobs:
           RELEASE_TITLE="AniHyou v${APP_VERSION} (${SHORT_SHA})"
 
           {
+            if [ -n "$STORE_RELEASE_NOTES" ]; then
+              echo "$STORE_RELEASE_NOTES"
+              echo ""
+              echo "---"
+            fi
             if [ -n "$COMMIT_MSG" ]; then
               echo "$COMMIT_MSG"
               echo ""
