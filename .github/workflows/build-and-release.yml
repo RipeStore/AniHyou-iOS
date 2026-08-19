@@ -187,32 +187,43 @@ jobs:
         run: |
           set -euo pipefail
           python3 - << 'PYEOF'
-          import os, shutil
+          import os, glob, re, shutil
 
-          # 1. Fix watchOS deployment target (11.6 -> 11.0) & relax Swift 6 strict concurrency errors
+          # 1. Fix watchOS deployment target (11.6 -> 11.0)
           pbxproj_path = "AniHyou.xcodeproj/project.pbxproj"
           if os.path.exists(pbxproj_path):
               with open(pbxproj_path, "r", encoding="utf-8") as f:
                   content = f.read()
               content = content.replace("WATCHOS_DEPLOYMENT_TARGET = 11.6;", "WATCHOS_DEPLOYMENT_TARGET = 11.0;")
-              content = content.replace("SWIFT_VERSION = 6.0;", "SWIFT_VERSION = 5.0;")
-              content = content.replace("SWIFT_APPROACHABLE_CONCURRENCY = YES;", "SWIFT_STRICT_CONCURRENCY = minimal;")
               with open(pbxproj_path, "w", encoding="utf-8") as f:
                   f.write(content)
-              print("✅ Patched project.pbxproj (watchOS SDK & Swift Concurrency settings)")
+              print("✅ Patched project.pbxproj watchOS deployment target to 11.0")
 
-          # 2. Patch PagedResult to conform to @unchecked Sendable
+          # 2. Patch PagedResult to conform to @unchecked Sendable for Swift 6 concurrency
           paged_result_path = "AniHyou/Network/PagedResult.swift"
           if os.path.exists(paged_result_path):
               with open(paged_result_path, "r", encoding="utf-8") as f:
                   pr = f.read()
               if "struct PagedResult<Data>" in pr and "@unchecked Sendable" not in pr:
-                  pr = pr.replace("struct PagedResult<Data>", "struct PagedResult<Data>: @unchecked Sendable")
+                  pr = re.sub(r'struct\s+PagedResult<Data>(?!\s*:\s*@unchecked\s+Sendable)', 'struct PagedResult<Data>: @unchecked Sendable', pr)
                   with open(paged_result_path, "w", encoding="utf-8") as f:
                       f.write(pr)
                   print("✅ Patched PagedResult to @unchecked Sendable")
 
-          # 3. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
+          # 3. Patch all repositories to @MainActor for clean Swift 6 actor isolation
+          for r_path in glob.glob("AniHyou/Repositories/*.swift"):
+              try:
+                  with open(r_path, "r", encoding="utf-8") as f:
+                      r_code = f.read()
+                  new_r_code = re.sub(r'(?<!@MainActor\s)struct\s+(\w+Repository)', r'@MainActor struct \1', r_code)
+                  if new_r_code != r_code:
+                      with open(r_path, "w", encoding="utf-8") as f:
+                          f.write(new_r_code)
+                      print(f"✅ Patched @MainActor on {r_path}")
+              except Exception as e:
+                  print(f"⚠️ Error patching {r_path}: {e}")
+
+          # 4. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
           for root, dirs, files in os.walk("."):
               if root.endswith(".xcassets"):
                   appicon = os.path.join(root, "AppIcon.appiconset")
