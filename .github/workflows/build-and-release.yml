@@ -47,8 +47,6 @@ jobs:
       app_version: ${{ steps.resolve.outputs.app_version }}
       release_notes: ${{ steps.resolve.outputs.release_notes }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
-      anilist_client_id: ${{ steps.resolve.outputs.anilist_client_id }}
-      mal_client_id: ${{ steps.resolve.outputs.mal_client_id }}
     steps:
       - name: Resolve target commit
         id: resolve
@@ -57,10 +55,6 @@ jobs:
           INPUT_TARGET: ${{ inputs.target }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
           IS_PRERELEASE: ${{ inputs.is_prerelease || 'false' }}
-          INPUT_ANILIST_ID: ${{ inputs.anilist_client_id }}
-          INPUT_MAL_ID: ${{ inputs.mal_client_id }}
-          SECRET_ANILIST_ID: ${{ secrets.ANILIST_CLIENT_ID }}
-          SECRET_MAL_ID: ${{ secrets.MAL_CLIENT_ID }}
         run: |
           set -euo pipefail
 
@@ -206,9 +200,6 @@ jobs:
                   f.write("should_build=false\n")
               sys.exit(0)
 
-          anilist_id = os.environ.get("INPUT_ANILIST_ID") or os.environ.get("SECRET_ANILIST_ID") or ""
-          mal_id = os.environ.get("INPUT_MAL_ID") or os.environ.get("SECRET_MAL_ID") or ""
-
           print(f"🚀 Ready to build target: {tag_name} ({target_source})")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write("should_build=true\n")
@@ -217,8 +208,6 @@ jobs:
               f.write(f"short_sha={short_sha}\n")
               f.write(f"app_version={app_version}\n")
               f.write(f"prerelease={str(is_prerelease).lower()}\n")
-              f.write(f"anilist_client_id={anilist_id}\n")
-              f.write(f"mal_client_id={mal_id}\n")
               if store_release_notes:
                   f.write(f"release_notes<<EOF\n{store_release_notes}\nEOF\n")
               else:
@@ -234,8 +223,8 @@ jobs:
     env:
       NSUnbufferedIO: "YES"
       GIT_TERMINAL_PROMPT: "0"
-      ANILIST_CLIENT_ID: ${{ needs.check-upstream.outputs.anilist_client_id }}
-      MAL_CLIENT_ID: ${{ needs.check-upstream.outputs.mal_client_id }}
+      ANILIST_CLIENT_ID: ${{ inputs.anilist_client_id || secrets.ANILIST_CLIENT_ID }}
+      MAL_CLIENT_ID: ${{ inputs.mal_client_id || secrets.MAL_CLIENT_ID }}
     steps:
       - name: Checkout AniHyou (${{ needs.check-upstream.outputs.short_sha }})
         uses: actions/checkout@v4
