@@ -183,11 +183,13 @@ jobs:
           } > AniHyou/Config.xcconfig
           echo "✅ Config.xcconfig configured"
 
-      - name: Patch Project Settings
+      - name: Patch Project Settings & Asset Catalogs
         run: |
           set -euo pipefail
           python3 - << 'PYEOF'
-          import os
+          import os, shutil
+
+          # 1. Fix watchOS deployment target (11.6 -> 11.0)
           pbxproj_path = "AniHyou.xcodeproj/project.pbxproj"
           if os.path.exists(pbxproj_path):
               with open(pbxproj_path, "r", encoding="utf-8") as f:
@@ -197,6 +199,26 @@ jobs:
                   with open(pbxproj_path, "w", encoding="utf-8") as f:
                       f.write(content)
                   print("✅ Patched WATCHOS_DEPLOYMENT_TARGET from 11.6 to 11.0 in project.pbxproj")
+
+          # 2. Fix AppIcon asset catalog naming mismatch (AppIcon -> AniHyou)
+          for root, dirs, files in os.walk("."):
+              if root.endswith(".xcassets"):
+                  appicon = os.path.join(root, "AppIcon.appiconset")
+                  anihyou = os.path.join(root, "AniHyou.appiconset")
+                  if os.path.exists(appicon) and not os.path.exists(anihyou):
+                      shutil.copytree(appicon, anihyou)
+                      print(f"✅ Created {anihyou} from {appicon}")
+
+                  appicons_sub = os.path.join(root, "AppIcons")
+                  if os.path.exists(appicons_sub):
+                      for item in os.listdir(appicons_sub):
+                          if item.startswith("AppIcon-") and item.endswith(".appiconset"):
+                              color = item.replace("AppIcon-", "").replace(".appiconset", "")
+                              src = os.path.join(appicons_sub, item)
+                              dst = os.path.join(appicons_sub, f"AniHyou-{color}.appiconset")
+                              if not os.path.exists(dst):
+                                  shutil.copytree(src, dst)
+                                  print(f"✅ Created {dst} from {src}")
           PYEOF
 
       # ─── Pre-resolve SPM to isolate network fetches & patch dependencies ───
