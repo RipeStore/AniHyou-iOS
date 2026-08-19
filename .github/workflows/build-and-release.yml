@@ -213,9 +213,12 @@ jobs:
             -disableAutomaticPackageResolution
           echo "✅ SPM dependencies resolved"
 
+          # Ensure all checked out files are writable
+          chmod -R u+w "$PWD/build" 2>/dev/null || true
+
           # Fix 'nonisolated deinit' in SPM packages (e.g. Nuke) under Swift 6 compiler
           python3 - << 'PYEOF'
-          import os, glob, re
+          import os, glob, re, stat
           search_roots = [
               os.path.abspath("build"),
               os.path.expanduser("~/Library/Developer/Xcode/DerivedData"),
@@ -230,16 +233,20 @@ jobs:
                           if file.endswith(".swift"):
                               fpath = os.path.join(root, file)
                               try:
-                                  with open(fpath, "r", encoding="utf-8") as f:
+                                  with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
                                       content = f.read()
                                   if "nonisolated deinit" in content:
                                       new_content = re.sub(r'\bnonisolated\s+deinit\b', 'deinit', content)
+                                      try:
+                                          os.chmod(fpath, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+                                      except Exception:
+                                          pass
                                       with open(fpath, "w", encoding="utf-8") as f:
                                           f.write(new_content)
                                       patched += 1
-                                      print(f"Patched nonisolated deinit in: {fpath}")
+                                      print(f"✅ Patched nonisolated deinit in: {fpath}")
                               except Exception as e:
-                                  pass
+                                  print(f"⚠️ Warning patching {fpath}: {e}")
           print(f"✅ Patched 'nonisolated deinit' across {patched} files")
           PYEOF
 
